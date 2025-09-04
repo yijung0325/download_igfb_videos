@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "IG/FB URL Saver (Full Fixed)",
+  "version": "1.3.0",
+  "description": "Save Instagram/Facebook content URLs with optional notes; edit/delete entries; export CSV; keeps img_index.",
+  "permissions": [
+    "storage",
+    "downloads",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.instagram.com/*",
+    "https://instagram.com/*",
+    "https://www.facebook.com/*",
+    "https://facebook.com/*",
+    "https://m.facebook.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "IG/FB URL Saver"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.instagram.com/*",
+        "https://instagram.com/*",
+        "https://www.facebook.com/*",
+        "https://facebook.com/*",
+        "https://m.facebook.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}

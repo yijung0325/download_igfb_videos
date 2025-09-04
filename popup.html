@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8"><title>IG/FB URL Saver</title><style>
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:12px;width:320px}
+h1{font-size:16px;margin:0 0 8px}.muted{color:#666;font-size:12px}
+button{padding:6px 8px;margin-right:6px;border-radius:6px;border:1px solid #ddd;cursor:pointer}
+.row{margin:10px 0}ul{max-height:240px;overflow:auto;padding-left:18px}
+li{font-size:12px;margin-bottom:6px;word-break:break-all}
+.btn-sm{font-size:11px;padding:3px 6px;margin-left:6px}
+.time{color:#666}
+.note{color:#333}
+.url{color:#0a84ff}
+</style></head><body>
+<h1>IG/FB URL Saver</h1>
+<div class="muted">在頁面按 <b>Save URL</b> 或影片上按 <b>Save</b>；可在此編輯/刪除</div>
+<div class="row"><button id="export">Export CSV</button><button id="clear">Clear</button><span id="count" class="muted"></span></div>
+<div class="row"><strong>最近新增</strong>（可編輯註解 / 刪除）<ul id="list"></ul></div>
+<script src="popup.js"></script>
+</body></html>
