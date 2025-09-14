@@ -5,6 +5,12 @@ from datetime import datetime
 from typing import Dict, Tuple, List, Set
 from urllib.parse import urlparse, parse_qs
 
+# 可選依賴：send2trash
+try:
+    from send2trash import send2trash
+except Exception:
+    send2trash = None  # 未安裝時會提示
+
 SAFE_CHAR_RE = re.compile(r"[^-\w\s\.\(\)\[\]{}、，・·’'`‧＿]+")
 
 def expand(p: str) -> str:
@@ -69,6 +75,12 @@ def extract_img_index(url: str):
         pass
     return None
 
+def file_ok(path: str) -> bool:
+    try:
+        return os.path.exists(path) and os.path.getsize(path) > 0
+    except Exception:
+        return False
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="~/Downloads/ig_fb_saved_urls.csv", help="CSV (time,comment,url)")
@@ -92,7 +104,6 @@ def main():
                 rows.append((row[0].strip(), row[1].strip(), row[2].strip()))
 
     # group by (note,date)
-    from collections import defaultdict
     groups: Dict[Tuple[str, str], List[Tuple[str, str, str]]] = defaultdict(list)
     for ts, comment, url in rows:
         date_str = parse_date_yyyymmdd(ts)
@@ -100,6 +111,9 @@ def main():
         groups[(note, date_str)].append((ts, comment, url))
 
     cookies_spec = build_browser_cookies_arg(args.browser, args.profile)
+
+    # 成功/失敗追蹤
+    all_results: List[bool] = []
 
     for (note, date_str), items in groups.items():
         used = scan_existing_indices(out_dir, note, date_str)
@@ -117,8 +131,10 @@ def main():
                 filename = f"{note}_{date_str}_{suffix}.mp4"
             filepath = os.path.join(out_dir, filename)
 
-            if os.path.exists(filepath):
+            # 若已存在且非 0 byte，視為已完成
+            if file_ok(filepath):
                 print(f"[skip exists] {filepath}")
+                all_results.append(True)
                 continue
 
             # --- KEY FIX: map ?img_index=N -> --playlist-items N ---
@@ -148,9 +164,35 @@ def main():
             cmd.append(url)
 
             print(f"[download] {url}  ->  {filepath}")
-            if not args.dry_run:
-                subprocess.run(cmd, check=False)
+            if args.dry_run:
+                # 乾跑模式，不實際下載，但視為未完成（避免誤丟 CSV）
+                all_results.append(False)
+            else:
+                proc = subprocess.run(cmd, check=False)
+                # 成功條件：檔案存在且非 0 byte（比僅看 returncode 更穩健）
+                ok = file_ok(filepath)
+                if not ok:
+                    # 有時 yt-dlp returncode=0 仍可能沒產出檔案，或反之
+                    print(f"[warn] download may have failed (no file): {filepath} (rc={proc.returncode})")
+                all_results.append(ok)
+
+    # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
+    if all_results and all(all_results) and not args.dry_run:
+        if send2trash is not None:
+            try:
+                send2trash(csv_path)
+                print(f"[done] All items succeeded. CSV moved to Trash: {csv_path}")
+            except Exception as e:
+                print(f"[error] Failed to send CSV to Trash: {e}")
+        else:
+            print("[info] All items succeeded, but 'send2trash' is not installed.")
+            print("       Install it to enable safe Trash move:  pip install send2trash")
+            # 出於安全，不做永久刪除
+    else:
+        if args.dry_run:
+            print("[note] Dry-run mode: CSV will NOT be moved to Trash.")
+        else:
+            print("[note] Not all items succeeded; CSV retained for retry.")
 
 if __name__ == "__main__":
     main()
-
