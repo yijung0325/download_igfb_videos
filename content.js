@@ -2,10 +2,39 @@
   var IG_HOSTS = { 'www.instagram.com':1, 'instagram.com':1 };
   var FB_HOSTS = { 'www.facebook.com':1, 'facebook.com':1, 'm.facebook.com':1 };
 
+  function getCanonicalContentInfo(url) {
+    try {
+      var h = url.hostname;
+      var p = url.pathname;
+      var m;
+      if (IG_HOSTS[h]) {
+        m = p.match(/^\/(p|reel|reels)\/([^\/?#]+)/);
+        if (m) {
+          return {
+            key: 'ig:' + m[1] + ':' + m[2],
+            pathname: '/' + m[1] + '/' + m[2] + '/'
+          };
+        }
+        m = p.match(/^\/(stories|story)\/([^\/?#]+)(\/[^\/?#]+)?/);
+        if (m) {
+          return {
+            key: 'ig:' + m[1] + ':' + m[2] + ':' + (m[3] || ''),
+            pathname: '/' + m[1] + '/' + m[2] + (m[3] || '') + '/'
+          };
+        }
+      }
+    } catch(e) {}
+    return null;
+  }
+
   function stripUrl(u) {
     try {
       var url = new URL(u);
+      var currentUrl = new URL(location.href);
+      var info = getCanonicalContentInfo(url);
+      var currentInfo = getCanonicalContentInfo(currentUrl);
       url.hash = '';
+      if (info) url.pathname = info.pathname;
       // keep only selected query params
       var keep = { 'img_index': 1 };
       var params = new URLSearchParams(url.search);
@@ -13,6 +42,11 @@
       params.forEach(function(value, key){
         if (keep[key]) kept.set(key, value);
       });
+      if (!kept.has('img_index') && info && currentInfo && info.key === currentInfo.key) {
+        var currentParams = new URLSearchParams(currentUrl.search);
+        var currentImgIndex = currentParams.get('img_index');
+        if (currentImgIndex) kept.set('img_index', currentImgIndex);
+      }
       url.search = kept.toString() ? ('?' + kept.toString()) : '';
       return url.toString();
     } catch(e){ return null; }
@@ -86,13 +120,11 @@
   function ensureChipFor(videoEl){
     if(!videoEl || videoEl.dataset.__igfbChip) return;
     var chip=document.createElement('button'); chip.textContent='Save'; chip.className='__igfb_chip__';
-    chip.style.cssText='position:absolute;right:8px;top:8px;z-index:2147483647;background:rgba(10,132,255,.95);color:#fff;border:none;border-radius:999px;padding:6px 10px;font:12px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);cursor:pointer;opacity:0;transition:opacity .15s';
+    chip.style.cssText='position:absolute;right:8px;top:8px;z-index:2147483647;background:rgba(10,132,255,.95);color:#fff;border:none;border-radius:999px;padding:6px 10px;font:12px/1 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;box-shadow:0 2px 8px rgba(0,0,0,.2);cursor:pointer;opacity:1';
     var wrap=document.createElement('div'); wrap.style.position='relative'; wrap.style.display='inline-block';
     var parent=videoEl.parentElement; if(!parent) return;
     parent.insertBefore(wrap, videoEl); wrap.appendChild(videoEl); wrap.appendChild(chip);
     videoEl.dataset.__igfbChip='1';
-    wrap.addEventListener('mouseenter', function(){ chip.style.opacity='1'; });
-    wrap.addEventListener('mouseleave', function(){ chip.style.opacity='0'; });
     chip.addEventListener('click', function(e){ e.stopPropagation(); e.preventDefault(); var u=findUsefulUrlFromElement(videoEl); saveUrl(u); });
   }
   var mo=new MutationObserver(function(){ var vids=document.querySelectorAll('video:not([data-__igfbChip])'); for(var i=0;i<vids.length;i++){ try{ensureChipFor(vids[i]);}catch(e){} } });
