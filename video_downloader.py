@@ -75,6 +75,29 @@ def extract_img_index(url: str):
         pass
     return None
 
+def extract_x_media_index(url: str):
+    try:
+        parsed = urlparse(url)
+        if parsed.hostname not in {
+            "x.com", "www.x.com", "m.x.com", "mobile.x.com",
+            "twitter.com", "www.twitter.com", "m.twitter.com", "mobile.twitter.com",
+        }:
+            return None
+        m = re.match(r"^/(?:i/web|[^/]+)/status/\d+/(?:video|photo)/(\d+)", parsed.path)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+def is_x_status_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        return parsed.hostname in {
+            "x.com", "www.x.com", "m.x.com", "mobile.x.com",
+            "twitter.com", "www.twitter.com", "m.twitter.com", "mobile.twitter.com",
+        } and re.match(r"^/(?:i/web|[^/]+)/status/\d+", parsed.path) is not None
+    except Exception:
+        return False
+
 def file_ok(path: str) -> bool:
     try:
         return os.path.exists(path) and os.path.getsize(path) > 0
@@ -83,7 +106,7 @@ def file_ok(path: str) -> bool:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default="~/Downloads/ig_fb_saved_urls.csv", help="CSV (time,comment,url)")
+    ap.add_argument("--csv", default="~/Downloads/ig_fb_x_saved_urls.csv", help="CSV (time,comment,url)")
     ap.add_argument("--out", default="~/Downloads", help="Output directory")
     ap.add_argument("--browser", default="chrome", help="cookies-from-browser (chrome|chromium|edge|brave)")
     ap.add_argument("--profile", default="", help='Browser profile, e.g. "Default", "Profile 2"')
@@ -139,6 +162,7 @@ def main():
 
             # --- KEY FIX: map ?img_index=N -> --playlist-items N ---
             img_idx = extract_img_index(url)
+            x_media_idx = extract_x_media_index(url)
 
             cmd = [
                 "yt-dlp",
@@ -152,6 +176,12 @@ def main():
             if img_idx is not None:
                 # 只抓清單中的第 N 個條目（與你 CSV 的 img_index 對齊）
                 cmd.extend(["--playlist-items", str(img_idx)])
+            elif x_media_idx is not None:
+                # yt-dlp 會直接依 X URL 的 /video/N 或 /photo/N 選擇媒體。
+                cmd.append("--no-playlist")
+            elif is_x_status_url(url):
+                # X 貼文可能包含多支影片；沒有媒體索引時只抓第一支，避免覆寫同一輸出檔。
+                cmd.extend(["--playlist-items", "1"])
             else:
                 # 沒有 img_index 的情況，避免整包抓
                 cmd.append("--no-playlist")

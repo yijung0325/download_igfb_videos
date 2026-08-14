@@ -74,7 +74,7 @@
       try {
         chrome.downloads.download({
           url: dataUrl,
-          filename: 'ig_fb_saved_urls.csv',
+          filename: 'ig_fb_x_saved_urls.csv',
           saveAs: true,
           conflictAction: 'uniquify'
         }, function(id) {
