@@ -104,6 +104,40 @@ def file_ok(path: str) -> bool:
     except Exception:
         return False
 
+def move_without_overwrite(source: str, destination: str) -> bool:
+    """Move a regular file without ever overwriting an existing destination."""
+    if not file_ok(source) or not os.path.isfile(source) or os.path.islink(source):
+        print(f"[warn] Cannot renumber missing or invalid file: {source}")
+        return False
+    if os.path.lexists(destination):
+        print(f"[warn] Cannot renumber because destination exists: {destination}")
+        return False
+
+    # source and destination are in the same output directory. Creating a hard
+    # link first gives us no-overwrite semantics; only then remove the old name.
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        print(f"[warn] Cannot renumber because destination exists: {destination}")
+        return False
+    except OSError as e:
+        print(f"[warn] Failed to prepare renumber: {source} -> {destination}: {e}")
+        return False
+
+    try:
+        os.unlink(source)
+    except OSError as e:
+        # Keep the original name when possible; both paths refer to the same data.
+        try:
+            os.unlink(destination)
+        except OSError:
+            pass
+        print(f"[warn] Failed to finish renumber: {source} -> {destination}: {e}")
+        return False
+
+    print(f"[rename] {source} -> {destination}")
+    return True
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="~/Downloads/ig_fb_x_saved_urls.csv", help="CSV (time,comment,url)")
@@ -137,6 +171,7 @@ def main():
 
     # 成功/失敗追蹤
     all_results: List[bool] = []
+    rename_candidates: List[Tuple[str, str]] = []
 
     for (note, date_str), items in groups.items():
         used = scan_existing_indices(out_dir, note, date_str)
@@ -144,6 +179,15 @@ def main():
         total_after = existing_count + len(items)
         width = choose_width(total_after)
         indices = next_indices(used, len(items))
+
+        # If this batch starts at 2, a legacy unnumbered file may represent #1.
+        # Defer the rename until every download in the CSV has succeeded.
+        if indices and indices[0] == 2:
+            first_suffix = "1" if width <= 1 else f"{1:0{width}d}"
+            rename_candidates.append((
+                os.path.join(out_dir, f"{note}_{date_str}.mp4"),
+                os.path.join(out_dir, f"{note}_{date_str}_{first_suffix}.mp4"),
+            ))
 
         for (ts, comment, url), idx in zip(items, indices):
             # decide filename by your rules
@@ -199,15 +243,17 @@ def main():
                 all_results.append(False)
             else:
                 proc = subprocess.run(cmd, check=False)
-                # 成功條件：檔案存在且非 0 byte（比僅看 returncode 更穩健）
-                ok = file_ok(filepath)
+                # 必須同時確認 yt-dlp 成功結束，且實際產出非空檔案。
+                ok = proc.returncode == 0 and file_ok(filepath)
                 if not ok:
-                    # 有時 yt-dlp returncode=0 仍可能沒產出檔案，或反之
-                    print(f"[warn] download may have failed (no file): {filepath} (rc={proc.returncode})")
+                    print(f"[warn] Download failed or output is invalid: {filepath} (rc={proc.returncode})")
                 all_results.append(ok)
 
     # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
     if all_results and all(all_results) and not args.dry_run:
+        for source, destination in rename_candidates:
+            move_without_overwrite(source, destination)
+
         if send2trash is not None:
             try:
                 send2trash(csv_path)
