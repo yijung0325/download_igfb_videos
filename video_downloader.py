@@ -104,38 +104,54 @@ def file_ok(path: str) -> bool:
     except Exception:
         return False
 
-def move_without_overwrite(source: str, destination: str) -> bool:
-    """Move a regular file without ever overwriting an existing destination."""
-    if not file_ok(source) or not os.path.isfile(source) or os.path.islink(source):
-        print(f"[warn] Cannot renumber missing or invalid file: {source}")
-        return False
-    if os.path.lexists(destination):
-        print(f"[warn] Cannot renumber because destination exists: {destination}")
-        return False
+def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
+    """Move regular files as one checked batch without overwriting destinations."""
+    if not moves:
+        return True
 
-    # source and destination are in the same output directory. Creating a hard
-    # link first gives us no-overwrite semantics; only then remove the old name.
+    for source, destination in moves:
+        if not file_ok(source) or not os.path.isfile(source) or os.path.islink(source):
+            print(f"[warn] Cannot renumber missing or invalid file: {source}")
+            return False
+        if os.path.lexists(destination):
+            print(f"[warn] Cannot renumber because destination exists: {destination}")
+            return False
+
+    # Create every destination as a hard link first. If any one fails, removing
+    # the links created so far leaves all original names untouched.
+    created: List[str] = []
     try:
-        os.link(source, destination)
-    except FileExistsError:
-        print(f"[warn] Cannot renumber because destination exists: {destination}")
-        return False
+        for source, destination in moves:
+            os.link(source, destination)
+            created.append(destination)
     except OSError as e:
-        print(f"[warn] Failed to prepare renumber: {source} -> {destination}: {e}")
+        for destination in reversed(created):
+            try:
+                os.unlink(destination)
+            except OSError:
+                pass
+        print(f"[warn] Failed to prepare renumber batch: {e}")
         return False
 
     try:
-        os.unlink(source)
+        for source, _ in moves:
+            os.unlink(source)
     except OSError as e:
-        # Keep the original name when possible; both paths refer to the same data.
-        try:
-            os.unlink(destination)
-        except OSError:
-            pass
-        print(f"[warn] Failed to finish renumber: {source} -> {destination}: {e}")
+        # Restore original names when possible. A destination is removed only
+        # after confirming that its original name points to the same file.
+        for source, destination in moves:
+            try:
+                if not os.path.lexists(source):
+                    os.link(destination, source)
+                if os.path.samefile(source, destination):
+                    os.unlink(destination)
+            except OSError:
+                pass
+        print(f"[warn] Failed to finish renumber batch: {e}")
         return False
 
-    print(f"[rename] {source} -> {destination}")
+    for source, destination in moves:
+        print(f"[rename] {source} -> {destination}")
     return True
 
 def main():
@@ -171,7 +187,7 @@ def main():
 
     # 成功/失敗追蹤
     all_results: List[bool] = []
-    rename_candidates: List[Tuple[str, str]] = []
+    rename_batches: List[List[Tuple[str, str]]] = []
 
     for (note, date_str), items in groups.items():
         used = scan_existing_indices(out_dir, note, date_str)
@@ -184,10 +200,20 @@ def main():
         # Defer the rename until every download in the CSV has succeeded.
         if indices and indices[0] == 2:
             first_suffix = "1" if width <= 1 else f"{1:0{width}d}"
-            rename_candidates.append((
+            rename_batches.append([(
                 os.path.join(out_dir, f"{note}_{date_str}.mp4"),
                 os.path.join(out_dir, f"{note}_{date_str}_{first_suffix}.mp4"),
-            ))
+            )])
+        elif indices and indices[0] == 10:
+            # The first newly assigned index is 10, so require all existing
+            # single-digit files and pad them to match the new filename width.
+            rename_batches.append([
+                (
+                    os.path.join(out_dir, f"{note}_{date_str}_{old_idx}.mp4"),
+                    os.path.join(out_dir, f"{note}_{date_str}_{old_idx:0{width}d}.mp4"),
+                )
+                for old_idx in range(1, 10)
+            ])
 
         for (ts, comment, url), idx in zip(items, indices):
             # decide filename by your rules
@@ -251,8 +277,8 @@ def main():
 
     # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
     if all_results and all(all_results) and not args.dry_run:
-        for source, destination in rename_candidates:
-            move_without_overwrite(source, destination)
+        for moves in rename_batches:
+            move_many_without_overwrite(moves)
 
         if send2trash is not None:
             try:
