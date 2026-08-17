@@ -190,6 +190,8 @@ def main():
     rename_batches: List[List[Tuple[str, str]]] = []
 
     for (note, date_str), items in groups.items():
+        group_results: List[bool] = []
+        pending_rename: List[Tuple[str, str]] = []
         used = scan_existing_indices(out_dir, note, date_str)
         existing_count = len(used)
         total_after = existing_count + len(items)
@@ -197,23 +199,23 @@ def main():
         indices = next_indices(used, len(items))
 
         # If this batch starts at 2, a legacy unnumbered file may represent #1.
-        # Defer the rename until every download in the CSV has succeeded.
+        # Defer the rename until every download in this group has succeeded.
         if indices and indices[0] == 2:
             first_suffix = "1" if width <= 1 else f"{1:0{width}d}"
-            rename_batches.append([(
+            pending_rename = [(
                 os.path.join(out_dir, f"{note}_{date_str}.mp4"),
                 os.path.join(out_dir, f"{note}_{date_str}_{first_suffix}.mp4"),
-            )])
+            )]
         elif indices and indices[0] == 10:
             # The first newly assigned index is 10, so require all existing
             # single-digit files and pad them to match the new filename width.
-            rename_batches.append([
+            pending_rename = [
                 (
                     os.path.join(out_dir, f"{note}_{date_str}_{old_idx}.mp4"),
                     os.path.join(out_dir, f"{note}_{date_str}_{old_idx:0{width}d}.mp4"),
                 )
                 for old_idx in range(1, 10)
-            ])
+            ]
 
         for (ts, comment, url), idx in zip(items, indices):
             # decide filename by your rules
@@ -228,6 +230,7 @@ def main():
             if file_ok(filepath):
                 print(f"[skip exists] {filepath}")
                 all_results.append(True)
+                group_results.append(True)
                 continue
 
             # --- KEY FIX: map ?img_index=N -> --playlist-items N ---
@@ -267,6 +270,7 @@ def main():
             if args.dry_run:
                 # 乾跑模式，不實際下載，但視為未完成（避免誤丟 CSV）
                 all_results.append(False)
+                group_results.append(False)
             else:
                 proc = subprocess.run(cmd, check=False)
                 # 必須同時確認 yt-dlp 成功結束，且實際產出非空檔案。
@@ -274,12 +278,19 @@ def main():
                 if not ok:
                     print(f"[warn] Download failed or output is invalid: {filepath} (rc={proc.returncode})")
                 all_results.append(ok)
+                group_results.append(ok)
 
-    # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
-    if all_results and all(all_results) and not args.dry_run:
+        if pending_rename and group_results and all(group_results):
+            rename_batches.append(pending_rename)
+
+    # Each (note, date) group is renamed independently. A failure in another
+    # group must not block renaming for groups whose downloads all succeeded.
+    if not args.dry_run:
         for moves in rename_batches:
             move_many_without_overwrite(moves)
 
+    # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
+    if all_results and all(all_results) and not args.dry_run:
         if send2trash is not None:
             try:
                 send2trash(csv_path)
