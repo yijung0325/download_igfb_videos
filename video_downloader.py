@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-import argparse, csv, glob, os, re, shlex, subprocess
+import argparse, csv, glob, os, re, shlex, subprocess, sys, tempfile
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Tuple, List, Set
 from urllib.parse import urlparse, parse_qs
 
@@ -103,6 +104,92 @@ def file_ok(path: str) -> bool:
         return os.path.exists(path) and os.path.getsize(path) > 0
     except Exception:
         return False
+
+def gallery_media_index(url: str):
+    img_idx = extract_img_index(url)
+    if img_idx is not None:
+        return img_idx
+    x_idx = extract_x_media_index(url)
+    if x_idx is not None:
+        return x_idx
+    return 1 if is_x_status_url(url) else None
+
+def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
+                             work_dir: str, rate_limit: str) -> bool:
+    gallery_dir = os.path.join(work_dir, "gallery")
+    os.makedirs(gallery_dir)
+    cmd = [
+        sys.executable, "-m", "gallery_dl", "--config-ignore",
+        "--cookies-from-browser", cookies_spec,
+        "--directory", gallery_dir,
+    ]
+    media_idx = gallery_media_index(url)
+    if media_idx is not None:
+        cmd.extend(["--filter", f"num == {media_idx}"])
+    if rate_limit:
+        cmd.extend(["--limit-rate", rate_limit])
+    cmd.append(url)
+
+    print(f"[fallback] Trying gallery-dl: {url}")
+    try:
+        proc = subprocess.run(cmd, check=False)
+    except OSError as error:
+        print(f"[warn] Cannot start gallery-dl: {error}")
+        return False
+
+    videos = [path for path in Path(gallery_dir).rglob("*")
+              if path.is_file() and path.suffix.lower() == ".mp4" and file_ok(str(path))]
+    if proc.returncode != 0 or len(videos) != 1:
+        print(f"[warn] gallery-dl did not produce exactly one MP4 "
+              f"(rc={proc.returncode}, videos={len(videos)}); CSV retained")
+        return False
+
+    os.replace(videos[0], filepath)
+    print(f"[fallback] Saved: {filepath}")
+    return True
+
+def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
+    with tempfile.TemporaryDirectory(prefix="igfb_", dir=os.path.dirname(filepath)) as work_dir:
+        yt_output = os.path.join(work_dir, "video.mp4")
+        cmd = [
+            "yt-dlp",
+            "--cookies-from-browser", cookies_spec,
+            "--merge-output-format", "mp4",
+            "--no-part",
+            "--no-abort-on-error",
+            "-o", yt_output,
+        ]
+
+        img_idx = extract_img_index(url)
+        x_media_idx = extract_x_media_index(url)
+        if img_idx is not None:
+            cmd.extend(["--playlist-items", str(img_idx)])
+        elif x_media_idx is not None:
+            cmd.append("--no-playlist")
+        elif is_x_status_url(url):
+            cmd.extend(["--playlist-items", "1"])
+        else:
+            cmd.append("--no-playlist")
+
+        if args.rate_limit:
+            cmd.extend(["--limit-rate", args.rate_limit])
+        if args.extra:
+            cmd.extend(shlex.split(args.extra))
+        cmd.append(url)
+
+        try:
+            proc = subprocess.run(cmd, check=False)
+            rc = proc.returncode
+        except OSError as error:
+            print(f"[warn] Cannot start yt-dlp: {error}")
+            rc = -1
+
+        if rc == 0 and file_ok(yt_output):
+            os.replace(yt_output, filepath)
+            return True
+
+        print(f"[warn] yt-dlp failed or output is invalid: {filepath} (rc={rc})")
+        return download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit)
 
 def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
     """Move regular files as one checked batch without overwriting destinations."""
@@ -233,50 +320,13 @@ def main():
                 group_results.append(True)
                 continue
 
-            # --- KEY FIX: map ?img_index=N -> --playlist-items N ---
-            img_idx = extract_img_index(url)
-            x_media_idx = extract_x_media_index(url)
-
-            cmd = [
-                "yt-dlp",
-                "--cookies-from-browser", cookies_spec,
-                "--merge-output-format", "mp4",
-                "--no-part",
-                "--no-abort-on-error",
-                "-o", filepath,
-            ]
-
-            if img_idx is not None:
-                # 只抓清單中的第 N 個條目（與你 CSV 的 img_index 對齊）
-                cmd.extend(["--playlist-items", str(img_idx)])
-            elif x_media_idx is not None:
-                # yt-dlp 會直接依 X URL 的 /video/N 或 /photo/N 選擇媒體。
-                cmd.append("--no-playlist")
-            elif is_x_status_url(url):
-                # X 貼文可能包含多支影片；沒有媒體索引時只抓第一支，避免覆寫同一輸出檔。
-                cmd.extend(["--playlist-items", "1"])
-            else:
-                # 沒有 img_index 的情況，避免整包抓
-                cmd.append("--no-playlist")
-
-            if args.rate_limit:
-                cmd.extend(["--limit-rate", args.rate_limit])
-            if args.extra:
-                cmd.extend(shlex.split(args.extra))
-
-            cmd.append(url)
-
             print(f"[download] {url}  ->  {filepath}")
             if args.dry_run:
                 # 乾跑模式，不實際下載，但視為未完成（避免誤丟 CSV）
                 all_results.append(False)
                 group_results.append(False)
             else:
-                proc = subprocess.run(cmd, check=False)
-                # 必須同時確認 yt-dlp 成功結束，且實際產出非空檔案。
-                ok = proc.returncode == 0 and file_ok(filepath)
-                if not ok:
-                    print(f"[warn] Download failed or output is invalid: {filepath} (rc={proc.returncode})")
+                ok = download_video(url, filepath, cookies_spec, args)
                 all_results.append(ok)
                 group_results.append(ok)
 
