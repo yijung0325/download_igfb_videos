@@ -120,16 +120,17 @@ def is_instagram_story_url(url: str) -> bool:
         re.fullmatch(r"/stories/[^/]+/\d+/?", parsed.path) is not None
 
 def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
-                             work_dir: str, rate_limit: str) -> bool:
-    gallery_dir = os.path.join(work_dir, "gallery")
+                             work_dir: str, rate_limit: str,
+                             video_mode: str = "") -> bool:
+    gallery_dir = os.path.join(work_dir, f"gallery_{video_mode or 'default'}")
     os.makedirs(gallery_dir)
     cmd = [
         sys.executable, "-m", "gallery_dl", "--config-ignore",
         "--cookies-from-browser", cookies_spec,
         "--directory", gallery_dir,
     ]
-    if is_instagram_story_url(url):
-        cmd.extend(["-o", "extractor.instagram.videos=merged"])
+    if video_mode:
+        cmd.extend(["-o", f"extractor.instagram.videos={video_mode}"])
     media_idx = gallery_media_index(url)
     if media_idx is not None:
         cmd.extend(["--filter", f"num == {media_idx}"])
@@ -137,7 +138,7 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
         cmd.extend(["--limit-rate", rate_limit])
     cmd.append(url)
 
-    print(f"[fallback] Trying gallery-dl: {url}")
+    print(f"[fallback] Trying gallery-dl ({video_mode or 'default'}): {url}")
     try:
         proc = subprocess.run(cmd, check=False)
     except OSError as error:
@@ -148,7 +149,7 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
               if path.is_file() and path.suffix.lower() == ".mp4" and file_ok(str(path))]
     if proc.returncode != 0 or len(videos) != 1:
         print(f"[warn] gallery-dl did not produce exactly one MP4 "
-              f"(rc={proc.returncode}, videos={len(videos)}); CSV retained")
+              f"(rc={proc.returncode}, videos={len(videos)})")
         return False
 
     os.replace(videos[0], filepath)
@@ -196,7 +197,12 @@ def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
             return True
 
         print(f"[warn] yt-dlp failed or output is invalid: {filepath} (rc={rc})")
-        return download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit)
+        if download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit):
+            return True
+        if is_instagram_story_url(url):
+            return download_with_gallery_dl(
+                url, filepath, cookies_spec, work_dir, args.rate_limit, "merged")
+        return False
 
 def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
     """Move regular files as one checked batch without overwriting destinations."""
