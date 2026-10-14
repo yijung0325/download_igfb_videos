@@ -114,6 +114,11 @@ def gallery_media_index(url: str):
         return x_idx
     return 1 if is_x_status_url(url) else None
 
+def is_instagram_story_url(url: str) -> bool:
+    parsed = urlparse(url)
+    return parsed.hostname in {"instagram.com", "www.instagram.com"} and \
+        re.fullmatch(r"/stories/[^/]+/\d+/?", parsed.path) is not None
+
 def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
                              work_dir: str, rate_limit: str) -> bool:
     gallery_dir = os.path.join(work_dir, "gallery")
@@ -123,6 +128,8 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
         "--cookies-from-browser", cookies_spec,
         "--directory", gallery_dir,
     ]
+    if is_instagram_story_url(url):
+        cmd.extend(["-o", "extractor.instagram.videos=merged"])
     media_idx = gallery_media_index(url)
     if media_idx is not None:
         cmd.extend(["--filter", f"num == {media_idx}"])
