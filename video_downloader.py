@@ -156,6 +156,56 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
     print(f"[fallback] Saved: {filepath}")
     return True
 
+def download_with_instaloader(url: str, filepath: str, work_dir: str,
+                              chrome_profile: str) -> bool:
+    parsed = urlparse(url)
+    match = re.fullmatch(r"/stories/([A-Za-z0-9._]+)/([0-9]+)/?", parsed.path)
+    if not match:
+        return False
+
+    username, story_id = match.groups()
+    output_dir = os.path.join(work_dir, "instaloader")
+    os.makedirs(output_dir)
+    cmd = [
+        sys.executable, "-m", "instaloader",
+        "--load-cookies", "chrome",
+        "--sessionfile", os.path.join(work_dir, "instaloader_session"),
+        "--stories", "--no-posts", "--no-profile-pic", "--no-iphone",
+        "--no-pictures", "--no-video-thumbnails", "--no-metadata-json",
+        "--no-captions", "--storyitem-filter", f"mediaid == {story_id} and is_video",
+        "--dirname-pattern", output_dir, "--filename-pattern", "{shortcode}",
+    ]
+    if chrome_profile:
+        profile_dir = os.path.join(
+            expand("~/Library/Application Support/Google/Chrome"), chrome_profile)
+        cookie_file = next((path for path in (
+            os.path.join(profile_dir, "Network", "Cookies"),
+            os.path.join(profile_dir, "Cookies"),
+        ) if os.path.isfile(path)), None)
+        if cookie_file is None:
+            print(f"[warn] Chrome profile cookie database not found: {profile_dir}")
+            return False
+        cmd.extend(["--cookiefile", cookie_file])
+    cmd.append(username)
+
+    print(f"[fallback] Trying Instaloader (Chrome, no-iphone): {url}")
+    try:
+        proc = subprocess.run(cmd, check=False)
+    except OSError as error:
+        print(f"[warn] Cannot start Instaloader: {error}")
+        return False
+
+    videos = [path for path in Path(output_dir).glob("*.mp4")
+              if path.is_file() and file_ok(str(path))]
+    if proc.returncode != 0 or len(videos) != 1:
+        print(f"[warn] Instaloader did not produce exactly one MP4 "
+              f"(rc={proc.returncode}, videos={len(videos)})")
+        return False
+
+    os.replace(videos[0], filepath)
+    print(f"[fallback] Saved (Instaloader, potentially lower quality): {filepath}")
+    return True
+
 def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
     with tempfile.TemporaryDirectory(prefix="igfb_", dir=os.path.dirname(filepath)) as work_dir:
         yt_output = os.path.join(work_dir, "video.mp4")
@@ -200,8 +250,10 @@ def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
         if download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit):
             return True
         if is_instagram_story_url(url):
-            return download_with_gallery_dl(
-                url, filepath, cookies_spec, work_dir, args.rate_limit, "merged")
+            if download_with_gallery_dl(
+                    url, filepath, cookies_spec, work_dir, args.rate_limit, "merged"):
+                return True
+            return download_with_instaloader(url, filepath, work_dir, args.profile)
         return False
 
 def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
