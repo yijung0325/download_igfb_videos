@@ -306,6 +306,21 @@ def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
         print(f"[rename] {source} -> {destination}")
     return True
 
+def rewrite_csv_rows(csv_path: str, rows: List[List[str]]) -> None:
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", newline="", encoding="utf-8", prefix=".igfb_",
+                suffix=".csv", dir=os.path.dirname(csv_path), delete=False) as temp_file:
+            temp_path = temp_file.name
+            csv.writer(temp_file, lineterminator="\n").writerows(rows)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_path, csv_path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", default="~/Downloads/ig_fb_x_saved_urls.csv", help="CSV (time,comment,url)")
@@ -321,24 +336,28 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
 
     # read CSV rows
-    rows = []
+    rows: List[Tuple[int, str, str, str]] = []
+    csv_rows: List[List[str]] = []
+    remaining_indices: Set[int] = set()
     with open(csv_path, newline="", encoding="utf-8") as f:
+        original_stat = os.fstat(f.fileno())
         r = csv.reader(f)
-        for row in r:
+        for row_idx, row in enumerate(r):
+            csv_rows.append(row)
             if len(row) >= 3 and row[2].strip():
-                rows.append((row[0].strip(), row[1].strip(), row[2].strip()))
+                rows.append((row_idx, row[0].strip(), row[1].strip(), row[2].strip()))
+            else:
+                remaining_indices.add(row_idx)
 
     # group by (note,date)
-    groups: Dict[Tuple[str, str], List[Tuple[str, str, str]]] = defaultdict(list)
-    for ts, comment, url in rows:
+    groups: Dict[Tuple[str, str], List[Tuple[int, str, str, str]]] = defaultdict(list)
+    for row_idx, ts, comment, url in rows:
         date_str = parse_date_yyyymmdd(ts)
         note = sanitize_note(comment)
-        groups[(note, date_str)].append((ts, comment, url))
+        groups[(note, date_str)].append((row_idx, ts, comment, url))
 
     cookies_spec = build_browser_cookies_arg(args.browser, args.profile)
 
-    # 成功/失敗追蹤
-    all_results: List[bool] = []
     rename_batches: List[List[Tuple[str, str]]] = []
 
     for (note, date_str), items in groups.items():
@@ -369,7 +388,7 @@ def main():
                 for old_idx in range(1, 10)
             ]
 
-        for (ts, comment, url), idx in zip(items, indices):
+        for (row_idx, ts, comment, url), idx in zip(items, indices):
             # decide filename by your rules
             if width == 0 and existing_count == 0 and idx == 1:
                 filename = f"{note}_{date_str}.mp4"
@@ -381,19 +400,18 @@ def main():
             # 若已存在且非 0 byte，視為已完成
             if file_ok(filepath):
                 print(f"[skip exists] {filepath}")
-                all_results.append(True)
                 group_results.append(True)
                 continue
 
             print(f"[download] {url}  ->  {filepath}")
             if args.dry_run:
                 # 乾跑模式，不實際下載，但視為未完成（避免誤丟 CSV）
-                all_results.append(False)
                 group_results.append(False)
             else:
                 ok = download_video(url, filepath, cookies_spec, args)
-                all_results.append(ok)
                 group_results.append(ok)
+                if not ok:
+                    remaining_indices.add(row_idx)
 
         if pending_rename and group_results and all(group_results):
             rename_batches.append(pending_rename)
@@ -404,8 +422,26 @@ def main():
         for moves in rename_batches:
             move_many_without_overwrite(moves)
 
-    # ---- 新增功能：全部成功才把 CSV 丟到資源回收桶 ----
-    if all_results and all(all_results) and not args.dry_run:
+    if args.dry_run:
+        print("[note] Dry-run mode: CSV will NOT be modified.")
+        return
+    if not rows:
+        print("[note] No downloadable rows; CSV unchanged.")
+        return
+
+    try:
+        current_stat = os.stat(csv_path)
+    except OSError as error:
+        print(f"[error] Cannot check CSV before updating it: {error}")
+        return
+    if (current_stat.st_dev, current_stat.st_ino, current_stat.st_size,
+            current_stat.st_mtime_ns) != (
+            original_stat.st_dev, original_stat.st_ino, original_stat.st_size,
+            original_stat.st_mtime_ns):
+        print("[warn] CSV changed during download; leaving it untouched.")
+        return
+
+    if not remaining_indices:
         if send2trash is not None:
             try:
                 send2trash(csv_path)
@@ -417,10 +453,14 @@ def main():
             print("       Install it to enable safe Trash move:  pip install send2trash")
             # 出於安全，不做永久刪除
     else:
-        if args.dry_run:
-            print("[note] Dry-run mode: CSV will NOT be moved to Trash.")
-        else:
-            print("[note] Not all items succeeded; CSV retained for retry.")
+        remaining_rows = [row for row_idx, row in enumerate(csv_rows)
+                          if row_idx in remaining_indices]
+        try:
+            rewrite_csv_rows(csv_path, remaining_rows)
+            print(f"[done] CSV updated with {len(remaining_rows)} failed or unprocessed "
+                  f"row(s): {csv_path}")
+        except OSError as error:
+            print(f"[error] Cannot update CSV; original file retained: {error}")
 
 if __name__ == "__main__":
     main()
