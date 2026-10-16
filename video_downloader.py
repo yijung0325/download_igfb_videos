@@ -120,17 +120,14 @@ def is_instagram_story_url(url: str) -> bool:
         re.fullmatch(r"/stories/[^/]+/\d+/?", parsed.path) is not None
 
 def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
-                             work_dir: str, rate_limit: str,
-                             video_mode: str = "") -> bool:
-    gallery_dir = os.path.join(work_dir, f"gallery_{video_mode or 'default'}")
+                             work_dir: str, rate_limit: str) -> bool:
+    gallery_dir = os.path.join(work_dir, "gallery_default")
     os.makedirs(gallery_dir)
     cmd = [
         sys.executable, "-m", "gallery_dl", "--config-ignore",
         "--cookies-from-browser", cookies_spec,
         "--directory", gallery_dir,
     ]
-    if video_mode:
-        cmd.extend(["-o", f"extractor.instagram.videos={video_mode}"])
     media_idx = gallery_media_index(url)
     if media_idx is not None:
         cmd.extend(["--filter", f"num == {media_idx}"])
@@ -138,7 +135,7 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
         cmd.extend(["--limit-rate", rate_limit])
     cmd.append(url)
 
-    print(f"[fallback] Trying gallery-dl ({video_mode or 'default'}): {url}")
+    print(f"[fallback] Trying gallery-dl (default): {url}")
     try:
         proc = subprocess.run(cmd, check=False)
     except OSError as error:
@@ -250,9 +247,6 @@ def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
         if download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit):
             return True
         if is_instagram_story_url(url):
-            if download_with_gallery_dl(
-                    url, filepath, cookies_spec, work_dir, args.rate_limit, "merged"):
-                return True
             return download_with_instaloader(url, filepath, work_dir, args.profile)
         return False
 
