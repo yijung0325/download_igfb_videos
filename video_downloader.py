@@ -300,6 +300,33 @@ def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
         print(f"[rename] {source} -> {destination}")
     return True
 
+def plan_existing_renames(out_dir: str, note: str, date_str: str) -> List[Tuple[str, str]]:
+    """Normalize a group's names using files that actually exist, not pending rows."""
+    stem = f"{note}_{date_str}"
+    numbered: List[Tuple[int, str, str]] = []
+    pattern = re.compile(rf"{re.escape(stem)}_(\d+)\.mp4$", re.IGNORECASE)
+    for name in os.listdir(out_dir):
+        match = pattern.fullmatch(name)
+        if match and file_ok(os.path.join(out_dir, name)):
+            numbered.append((int(match.group(1)), match.group(1), name))
+
+    if not numbered:
+        return []
+
+    width = max(1, max(max(len(digits), len(str(idx))) for idx, digits, _ in numbered))
+    moves: List[Tuple[str, str]] = []
+    base = os.path.join(out_dir, f"{stem}.mp4")
+    if file_ok(base):
+        moves.append((base, os.path.join(out_dir, f"{stem}_{1:0{width}d}.mp4")))
+
+    if width > 1:
+        for idx, digits, name in numbered:
+            suffix = f"{idx:0{width}d}"
+            if digits != suffix:
+                moves.append((os.path.join(out_dir, name),
+                              os.path.join(out_dir, f"{stem}_{suffix}.mp4")))
+    return moves
+
 def rewrite_csv_rows(csv_path: str, rows: List[List[str]]) -> None:
     temp_path = None
     try:
@@ -352,35 +379,12 @@ def main():
 
     cookies_spec = build_browser_cookies_arg(args.browser, args.profile)
 
-    rename_batches: List[List[Tuple[str, str]]] = []
-
     for (note, date_str), items in groups.items():
-        group_results: List[bool] = []
-        pending_rename: List[Tuple[str, str]] = []
         used = scan_existing_indices(out_dir, note, date_str)
         existing_count = len(used)
         total_after = existing_count + len(items)
         width = choose_width(total_after)
         indices = next_indices(used, len(items))
-
-        # If this batch starts at 2, a legacy unnumbered file may represent #1.
-        # Defer the rename until every download in this group has succeeded.
-        if indices and indices[0] == 2:
-            first_suffix = "1" if width <= 1 else f"{1:0{width}d}"
-            pending_rename = [(
-                os.path.join(out_dir, f"{note}_{date_str}.mp4"),
-                os.path.join(out_dir, f"{note}_{date_str}_{first_suffix}.mp4"),
-            )]
-        elif indices and indices[0] == 10:
-            # The first newly assigned index is 10, so require all existing
-            # single-digit files and pad them to match the new filename width.
-            pending_rename = [
-                (
-                    os.path.join(out_dir, f"{note}_{date_str}_{old_idx}.mp4"),
-                    os.path.join(out_dir, f"{note}_{date_str}_{old_idx:0{width}d}.mp4"),
-                )
-                for old_idx in range(1, 10)
-            ]
 
         for (row_idx, ts, comment, url), idx in zip(items, indices):
             # decide filename by your rules
@@ -394,27 +398,19 @@ def main():
             # 若已存在且非 0 byte，視為已完成
             if file_ok(filepath):
                 print(f"[skip exists] {filepath}")
-                group_results.append(True)
                 continue
 
             print(f"[download] {url}  ->  {filepath}")
             if args.dry_run:
                 # 乾跑模式，不實際下載，但視為未完成（避免誤丟 CSV）
-                group_results.append(False)
+                continue
             else:
                 ok = download_video(url, filepath, cookies_spec, args)
-                group_results.append(ok)
                 if not ok:
                     remaining_indices.add(row_idx)
 
-        if pending_rename and group_results and all(group_results):
-            rename_batches.append(pending_rename)
-
-    # Each (note, date) group is renamed independently. A failure in another
-    # group must not block renaming for groups whose downloads all succeeded.
-    if not args.dry_run:
-        for moves in rename_batches:
-            move_many_without_overwrite(moves)
+        if not args.dry_run:
+            move_many_without_overwrite(plan_existing_renames(out_dir, note, date_str))
 
     if args.dry_run:
         print("[note] Dry-run mode: CSV will NOT be modified.")
