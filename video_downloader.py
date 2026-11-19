@@ -135,7 +135,7 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
         cmd.extend(["--limit-rate", rate_limit])
     cmd.append(url)
 
-    print(f"[fallback] Trying gallery-dl (default): {url}")
+    print(f"[gallery-dl] Trying: {url}")
     try:
         proc = subprocess.run(cmd, check=False)
     except OSError as error:
@@ -150,105 +150,59 @@ def download_with_gallery_dl(url: str, filepath: str, cookies_spec: str,
         return False
 
     os.replace(videos[0], filepath)
-    print(f"[fallback] Saved: {filepath}")
+    print(f"[gallery-dl] Saved: {filepath}")
     return True
 
-def download_with_instaloader(url: str, filepath: str, work_dir: str,
-                              chrome_profile: str) -> bool:
-    parsed = urlparse(url)
-    match = re.fullmatch(r"/stories/([A-Za-z0-9._]+)/([0-9]+)/?", parsed.path)
-    if not match:
-        return False
-
-    username, story_id = match.groups()
-    output_dir = os.path.join(work_dir, "instaloader")
-    os.makedirs(output_dir)
+def download_with_yt_dlp(url: str, filepath: str, cookies_spec: str,
+                         work_dir: str, args) -> bool:
+    yt_output = os.path.join(work_dir, "video.mp4")
     cmd = [
-        sys.executable, "-m", "instaloader",
-        "--load-cookies", "chrome",
-        "--sessionfile", os.path.join(work_dir, "instaloader_session"),
-        "--stories", "--no-posts", "--no-profile-pic", "--no-iphone",
-        "--no-pictures", "--no-video-thumbnails", "--no-metadata-json",
-        "--no-captions", "--storyitem-filter", f"mediaid == {story_id} and is_video",
-        "--dirname-pattern", output_dir, "--filename-pattern", "{shortcode}",
+        "yt-dlp",
+        "--cookies-from-browser", cookies_spec,
+        "--merge-output-format", "mp4",
+        "--no-part",
+        "--no-abort-on-error",
+        "-o", yt_output,
     ]
-    if chrome_profile:
-        profile_dir = os.path.join(
-            expand("~/Library/Application Support/Google/Chrome"), chrome_profile)
-        cookie_file = next((path for path in (
-            os.path.join(profile_dir, "Network", "Cookies"),
-            os.path.join(profile_dir, "Cookies"),
-        ) if os.path.isfile(path)), None)
-        if cookie_file is None:
-            print(f"[warn] Chrome profile cookie database not found: {profile_dir}")
-            return False
-        cmd.extend(["--cookiefile", cookie_file])
-    cmd.append(username)
 
-    print(f"[fallback] Trying Instaloader (Chrome, no-iphone): {url}")
+    img_idx = extract_img_index(url)
+    x_media_idx = extract_x_media_index(url)
+    if img_idx is not None:
+        cmd.extend(["--playlist-items", str(img_idx)])
+    elif x_media_idx is not None:
+        cmd.append("--no-playlist")
+    elif is_x_status_url(url):
+        cmd.extend(["--playlist-items", "1"])
+    else:
+        cmd.append("--no-playlist")
+
+    if args.rate_limit:
+        cmd.extend(["--limit-rate", args.rate_limit])
+    if args.extra:
+        cmd.extend(shlex.split(args.extra))
+    cmd.append(url)
+
     try:
         proc = subprocess.run(cmd, check=False)
+        rc = proc.returncode
     except OSError as error:
-        print(f"[warn] Cannot start Instaloader: {error}")
-        return False
+        print(f"[warn] Cannot start yt-dlp: {error}")
+        rc = -1
 
-    videos = [path for path in Path(output_dir).glob("*.mp4")
-              if path.is_file() and file_ok(str(path))]
-    if proc.returncode != 0 or len(videos) != 1:
-        print(f"[warn] Instaloader did not produce exactly one MP4 "
-              f"(rc={proc.returncode}, videos={len(videos)})")
-        return False
+    if rc == 0 and file_ok(yt_output):
+        os.replace(yt_output, filepath)
+        return True
 
-    os.replace(videos[0], filepath)
-    print(f"[fallback] Saved (Instaloader, potentially lower quality): {filepath}")
-    return True
+    print(f"[warn] yt-dlp failed or output is invalid: {filepath} (rc={rc})")
+    return False
 
 def download_video(url: str, filepath: str, cookies_spec: str, args) -> bool:
     with tempfile.TemporaryDirectory(prefix="igfb_", dir=os.path.dirname(filepath)) as work_dir:
-        yt_output = os.path.join(work_dir, "video.mp4")
-        cmd = [
-            "yt-dlp",
-            "--cookies-from-browser", cookies_spec,
-            "--merge-output-format", "mp4",
-            "--no-part",
-            "--no-abort-on-error",
-            "-o", yt_output,
-        ]
-
-        img_idx = extract_img_index(url)
-        x_media_idx = extract_x_media_index(url)
-        if img_idx is not None:
-            cmd.extend(["--playlist-items", str(img_idx)])
-        elif x_media_idx is not None:
-            cmd.append("--no-playlist")
-        elif is_x_status_url(url):
-            cmd.extend(["--playlist-items", "1"])
-        else:
-            cmd.append("--no-playlist")
-
-        if args.rate_limit:
-            cmd.extend(["--limit-rate", args.rate_limit])
-        if args.extra:
-            cmd.extend(shlex.split(args.extra))
-        cmd.append(url)
-
-        try:
-            proc = subprocess.run(cmd, check=False)
-            rc = proc.returncode
-        except OSError as error:
-            print(f"[warn] Cannot start yt-dlp: {error}")
-            rc = -1
-
-        if rc == 0 and file_ok(yt_output):
-            os.replace(yt_output, filepath)
-            return True
-
-        print(f"[warn] yt-dlp failed or output is invalid: {filepath} (rc={rc})")
-        if download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit):
-            return True
         if is_instagram_story_url(url):
-            return download_with_instaloader(url, filepath, work_dir, args.profile)
-        return False
+            return (download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit)
+                    or download_with_yt_dlp(url, filepath, cookies_spec, work_dir, args))
+        return (download_with_yt_dlp(url, filepath, cookies_spec, work_dir, args)
+                or download_with_gallery_dl(url, filepath, cookies_spec, work_dir, args.rate_limit))
 
 def move_many_without_overwrite(moves: List[Tuple[str, str]]) -> bool:
     """Move regular files as one checked batch without overwriting destinations."""
